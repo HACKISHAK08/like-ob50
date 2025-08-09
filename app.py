@@ -351,8 +351,4 @@ def run_scheduler():
         time.sleep(1)
 
 if __name__ == '__main__':
-    # بدء خيط منفصل للمجدول
-    scheduler_thread = Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
-    
     app.run(debug=True, use_reloader=False)
