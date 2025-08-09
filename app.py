@@ -15,8 +15,6 @@ from google.protobuf.json_format import MessageToJson
 from google.protobuf.message import DecodeError
 import time
 import os
-from threading import Thread
-import schedule
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -24,12 +22,10 @@ logging.basicConfig(level=logging.INFO)
 # ملفات التكوين
 CONFIG_FILE = "me_config.json"
 TOKEN_FILE = "token_ME.json"
-TOKEN_REFRESH_INTERVAL = 5 * 60 * 60  # 5 ساعات بالثواني
 
 class TokenManager:
     def __init__(self):
         self.tokens = []
-        self.last_refresh_time = 0
         self.load_tokens()
 
     def load_tokens(self):
@@ -60,7 +56,9 @@ class TokenManager:
                     t["uid"] = ""
 
     def get_tokens(self):
-        # فقط ترجع التوكنات الحالية بدون أي تجديد
+        """الحصول على التوكنات مع محاولة تجديدها إذا كانت فارغة"""
+        if not self.tokens:
+            self.refresh_tokens()
         return self.tokens
 
     def refresh_tokens(self):
@@ -86,7 +84,6 @@ class TokenManager:
                 self.tokens = new_tokens
                 self._extract_uids()
                 self._save_tokens()
-                self.last_refresh_time = time.time()
                 logging.info(f"تم تجديد {len(new_tokens)} توكن بنجاح")
                 return True
             return False
@@ -114,7 +111,7 @@ class TokenManager:
         }
         
         try:
-            response = requests.post(url, headers=headers, data=data)
+            response = requests.post(url, headers=headers, data=data, timeout=10)
             if response.status_code == 200:
                 token_data = response.json()
                 return token_data.get('access_token')
@@ -137,7 +134,7 @@ class TokenManager:
 # تهيئة مدير التوكنات
 token_manager = TokenManager()
 
-# باقي الدوال كما هي (مع تعديل بسيط لاستخدام token_manager بدلاً من TokenCache)
+# دوال التشفير وبروتوكول الباف
 def encrypt_message(plaintext):
     try:
         key = b'Yg&tc%DEuh6%Zc^8'
@@ -200,9 +197,12 @@ async def send_multiple_requests(uid, server_name, url):
         if not tokens:
             app.logger.error("Failed to load tokens.")
             return None
-        for i in range(100):
-            token = tokens[i % len(tokens)]["token"]
+        
+        # تقليل عدد الطلبات لتجنب المشاكل على Vercel
+        for i in range(min(10, len(tokens))):
+            token = tokens[i]["token"]
             tasks.append(send_request(encrypted_uid, token, url))
+        
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return results
     except Exception as e:
@@ -246,7 +246,7 @@ def make_request(encrypt, server_name, token):
             'X-GA': "v1 1",
             'ReleaseVersion': "OB50"
         }
-        response = requests.post(url, data=edata, headers=headers, verify=False)
+        response = requests.post(url, data=edata, headers=headers, verify=False, timeout=10)
         hex_data = response.content.hex()
         binary = bytes.fromhex(hex_data)
         decode = decode_protobuf(binary)
@@ -270,85 +270,71 @@ def decode_protobuf(binary):
         return None
 
 @app.route('/like', methods=['GET'])
-def handle_requests():
+async def like_endpoint():
     uid = request.args.get("uid")
     server_name = request.args.get("server_name", "").upper()
     if not uid or not server_name:
         return jsonify({"error": "UID and server_name are required"}), 400
 
     try:
-        def process_request():
-            tokens = token_manager.get_tokens()
-            if not tokens:
-                raise Exception("Failed to load tokens.")
-            token = tokens[0]['token']
-            encrypted_uid = enc(uid)
-            if encrypted_uid is None:
-                raise Exception("Encryption of UID failed.")
+        tokens = token_manager.get_tokens()
+        if not tokens:
+            return jsonify({"error": "No valid tokens available"}), 500
+        
+        token = tokens[0]['token']
+        encrypted_uid = enc(uid)
+        if encrypted_uid is None:
+            return jsonify({"error": "UID encryption failed"}), 500
 
-            # بيانات اللاعب قبل الإعجاب
-            before = make_request(encrypted_uid, server_name, token)
-            if before is None:
-                raise Exception("Failed to retrieve initial player info.")
-            try:
-                jsone = MessageToJson(before)
-            except Exception as e:
-                raise Exception(f"Error converting 'before' protobuf to JSON: {e}")
-            data_before = json.loads(jsone)
-            before_like = data_before.get('AccountInfo', {}).get('Likes', 0)
-            try:
-                before_like = int(before_like)
-            except Exception:
-                before_like = 0
-            app.logger.info(f"Likes before command: {before_like}")
+        # بيانات اللاعب قبل الإعجاب
+        before = make_request(encrypted_uid, server_name, token)
+        if before is None:
+            return jsonify({"error": "Failed to get initial player info"}), 500
+        
+        try:
+            data_before = json.loads(MessageToJson(before))
+            before_like = int(data_before.get('AccountInfo', {}).get('Likes', 0))
+        except Exception as e:
+            return jsonify({"error": f"Error parsing initial data: {str(e)}"}), 500
 
-            # رابط الإعجاب حسب السيرفر
-            if server_name == "ME":
-                url = "https://clientbp.ggblueshark.com/LikeProfile"
-            elif server_name in {"BR", "US", "SAC", "NA"}:
-                url = "https://client.us.freefiremobile.com/LikeProfile"
-            else:
-                url = "https://clientbp.ggblueshark.com/LikeProfile"
+        # إرسال الإعجابات
+        if server_name == "ME":
+            url = "https://clientbp.ggblueshark.com/LikeProfile"
+        elif server_name in {"BR", "US", "SAC", "NA"}:
+            url = "https://client.us.freefiremobile.com/LikeProfile"
+        else:
+            url = "https://clientbp.ggblueshark.com/LikeProfile"
 
-            # إرسال لايكات بشكل غير متزامن
-            asyncio.run(send_multiple_requests(uid, server_name, url))
+        await send_multiple_requests(uid, server_name, url)
 
-            # بيانات اللاعب بعد الإعجاب
-            after = make_request(encrypted_uid, server_name, token)
-            if after is None:
-                raise Exception("Failed to retrieve player info after like requests.")
-            try:
-                jsone_after = MessageToJson(after)
-            except Exception as e:
-                raise Exception(f"Error converting 'after' protobuf to JSON: {e}")
-            data_after = json.loads(jsone_after)
+        # بيانات اللاعب بعد الإعجاب
+        after = make_request(encrypted_uid, server_name, token)
+        if after is None:
+            return jsonify({"error": "Failed to get player info after sending likes"}), 500
+        
+        try:
+            data_after = json.loads(MessageToJson(after))
             after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0))
             player_uid = int(data_after.get('AccountInfo', {}).get('UID', 0))
             player_name = str(data_after.get('PlayerNickname', ''))
-            like_given = after_like - before_like
-            status = 1 if like_given != 0 else 2
-            result = {
-                "LikesGivenByAPI": like_given,
-                "LikesafterCommand": after_like,
-                "LikesbeforeCommand": before_like,
-                "PlayerNickname": player_name,
-                "UID": player_uid,
-                "status": status
-            }
-            return result
+        except Exception as e:
+            return jsonify({"error": f"Error parsing after data: {str(e)}"}), 500
 
-        result = process_request()
-        return jsonify(result)
+        like_given = after_like - before_like
+        status = 1 if like_given != 0 else 2
+        
+        return jsonify({
+            "LikesGivenByAPI": like_given,
+            "LikesafterCommand": after_like,
+            "LikesbeforeCommand": before_like,
+            "PlayerNickname": player_name,
+            "UID": player_uid,
+            "status": status
+        })
+
     except Exception as e:
-        app.logger.error(f"Error processing request: {e}")
-        return jsonify({"error": str(e)}), 500
-
-def run_scheduler():
-    """تشغيل المجدول لتجديد التوكنات كل 5 ساعات"""
-    schedule.every(TOKEN_REFRESH_INTERVAL).seconds.do(token_manager.refresh_tokens)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+        app.logger.error(f"Error in like endpoint: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
