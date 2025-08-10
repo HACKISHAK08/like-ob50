@@ -187,7 +187,7 @@ async def send_multiple_requests(uid, server_name, url):
             return None
         
         # تقليل عدد الطلبات لتجنب المشاكل على Vercel
-        for i in range(min(10, len(tokens))):
+        for i in range(min(100, len(tokens))):
             token = tokens[i]["token"]
             tasks.append(send_request(encrypted_uid, token, url))
         
