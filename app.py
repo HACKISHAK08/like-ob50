@@ -91,36 +91,24 @@ class TokenManager:
             logging.error(f"خطأ في تجديد التوكنات: {e}")
             return False
     
-    def get_new_token(self, uid, password):
-        """استخراج توكن جديد لـ UID معين"""
-        url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
-        headers = {
-            "Host": "100067.connect.garena.com",
-            "User-Agent": "GarenaMSDK/4.0.19P4(G011A ;Android 9;en;US;)",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "close"
-        }
-        data = {
-            "uid": uid,
-            "password": password,
-            "response_type": "token",
-            "client_type": "2",
-            "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
-            "client_id": "100067"
-        }
-        
-        try:
-            response = requests.post(url, headers=headers, data=data, timeout=10)
-            if response.status_code == 200:
-                token_data = response.json()
-                return token_data.get('access_token')
-            else:
-                logging.error(f"فشل في الحصول على توكن لـ {uid}: {response.text}")
-                return None
-        except Exception as e:
-            logging.error(f"خطأ في طلب التوكن لـ {uid}: {e}")
+def get_new_token(self, uid, password):
+    """استخراج توكن جديد لـ UID معين عبر API الجديد"""
+    url = "https://token-free-vz9x.vercel.app/get"
+    params = {
+        "uid": uid,
+        "password": password
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            token_data = response.json()
+            return token_data.get('token')
+        else:
+            logging.error(f"فشل في الحصول على توكن لـ {uid}: {response.text}")
             return None
+    except Exception as e:
+        logging.error(f"خطأ في طلب التوكن لـ {uid}: {e}")
+        return None
     
     def _save_tokens(self):
         """حفظ التوكنات في الملف"""
