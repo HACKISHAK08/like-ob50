@@ -304,7 +304,7 @@ async def like_endpoint():
             data_after = json.loads(MessageToJson(after))
             after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0))
             player_uid = int(data_after.get('AccountInfo', {}).get('UID', 0))
-            player_name = str(data_after.get('PlayerNickname', ''))
+            player_name = str(data_after.get('AccountInfo', {}).get('PlayerNickname', ''))
         except Exception as e:
             return jsonify({"error": f"Error parsing after data: {str(e)}"}), 500
 
